@@ -1,15 +1,15 @@
 ---
 name: setup-linux
-description: Set up NanoClaw on Linux (Ubuntu/Debian recommended). Installs deps, builds, authenticates WhatsApp, configures Claude auth, and optionally sets up systemd.
+description: Set up NanoClaw on Linux (Ubuntu/Debian recommended). Installs deps, configures .env, optional WhatsApp auth, and optional systemd service.
 ---
 
 # NanoClaw Linux Setup
 
-Run all commands automatically. Only pause when **user action is required** (WhatsApp QR scan, choosing auth method).
+Run commands automatically. Only pause when **user action is required** (WhatsApp QR scan, choosing Claude auth).
 
 > Notes
-> - This fork runs the **agent runner directly on the Linux host** (no Apple Container).
-> - Commands assume Ubuntu/Debian. For other distros, install equivalent packages.
+> - Runs directly on the host (no containers).
+> - The systemd service uses `npm run dev` (tsx), not `dist/index.js`.
 
 ## 1) Prerequisites
 
@@ -40,9 +40,9 @@ sudo apt-get install -y sqlite3
 
 ### Claude authentication (pick one)
 
-NanoClaw’s agent runner uses Anthropic’s Agent SDK. You must provide **either**:
+NanoClaw uses the Claude Agent SDK. Provide **either**:
 
-- `CLAUDE_CODE_OAUTH_TOKEN` (if using a Claude subscription via Claude Code), or
+- `CLAUDE_CODE_OAUTH_TOKEN` (Claude Code OAuth), or
 - `ANTHROPIC_API_KEY`
 
 ## 2) Clone / fork
@@ -54,11 +54,7 @@ git clone https://github.com/gunabot/nanoclaw.git
 cd nanoclaw
 ```
 
-If you are working from your own fork, clone that URL instead.
-
 ## 3) Install dependencies
-
-Install root deps and the agent-runner deps (handled by `postinstall`):
 
 ```bash
 npm install
@@ -66,94 +62,27 @@ npm install
 
 If this fails due to `better-sqlite3` build errors, see Troubleshooting.
 
-## 4) Build
-
-Build the agent runner and the main app:
-
-```bash
-npm run build
-```
-
-Sanity check:
-
-```bash
-node -v
-ls -la dist/index.js container/agent-runner/dist/index.js
-```
-
-## 5) Configuration
-
-### 5.1 Create `.env`
+## 4) Configuration (`.env`)
 
 NanoClaw reads env vars from `.env` in the project root.
 
-Ask the user:
-> Do you want to authenticate with your **Claude subscription (Claude Code OAuth token)** or an **Anthropic API key**?
-
-#### Option A: Claude subscription (OAuth token)
-
-If the user already uses Claude Code on this machine, try to extract the token:
-
-```bash
-TOKEN=$(cat ~/.claude/.credentials.json 2>/dev/null | jq -r '.claudeAiOauth.accessToken // empty')
-if [ -n "$TOKEN" ]; then
-  {
-    echo "CLAUDE_CODE_OAUTH_TOKEN=$TOKEN"
-  } > .env
-  echo "Wrote CLAUDE_CODE_OAUTH_TOKEN to .env: ${TOKEN:0:20}...${TOKEN: -4}"
-else
-  echo "No token found in ~/.claude/.credentials.json"
-fi
-```
-
-If `jq` is missing:
-
-```bash
-sudo apt-get install -y jq
-```
-
-If token still missing, tell the user:
-> Run `claude` in another terminal, log in, then re-run the token extraction.
-
-#### Option B: Anthropic API key
-
-Create `.env` and have the user paste a key:
+Minimum Discord + Claude example:
 
 ```bash
 cat > .env << 'EOF'
+ASSISTANT_NAME=Andy
+DISCORD_TOKEN=
+DISCORD_MAIN_CHANNEL_ID=
 ANTHROPIC_API_KEY=
+# Or use: CLAUDE_CODE_OAUTH_TOKEN=
 EOF
 ```
 
-Tell the user to set it from: https://console.anthropic.com/
+Notes:
+- Discord-only is supported. Leave WhatsApp steps out if you only want Discord.
+- For WhatsApp-only, you can omit `DISCORD_TOKEN`.
 
-Verify it is non-empty:
-
-```bash
-KEY=$(grep '^ANTHROPIC_API_KEY=' .env | cut -d= -f2-)
-[ -n "$KEY" ] && echo "API key configured: ${KEY:0:10}...${KEY: -4}" || echo "Missing ANTHROPIC_API_KEY"
-```
-
-### 5.2 (Optional) Mount allowlist (external directory access)
-
-Even without containers, NanoClaw maintains a host-side allowlist to control what directories agents may be given access to.
-
-Create an explicit “no external access” allowlist:
-
-```bash
-mkdir -p ~/.config/nanoclaw
-cat > ~/.config/nanoclaw/mount-allowlist.json << 'EOF'
-{
-  "allowedRoots": [],
-  "blockedPatterns": [],
-  "nonMainReadOnly": true
-}
-EOF
-```
-
-If the user wants to allow specific folders, collect paths + read/write intent and write them into `~/.config/nanoclaw/mount-allowlist.json`.
-
-## 6) WhatsApp authentication
+## 5) WhatsApp authentication (optional)
 
 **USER ACTION REQUIRED**
 
@@ -171,9 +100,9 @@ Tell the user:
 
 When it prints “Successfully authenticated” (or “Already authenticated”), continue.
 
-## 7) Register your main control chat
+## 6) Register your WhatsApp main control chat (optional)
 
-NanoClaw needs to know which chat(s) it should respond to.
+NanoClaw only needs this if you are using WhatsApp.
 
 Ask the user:
 > Do you want to use your **personal chat** (Message Yourself) or a **WhatsApp group** as your main control channel?
@@ -219,43 +148,33 @@ Ensure the group folder exists:
 mkdir -p groups/main/logs
 ```
 
-## 8) Running NanoClaw
+## 7) Run NanoClaw
 
-### Foreground (manual)
-
-```bash
-npm run build
-npm start
-```
-
-Or for dev mode:
+Foreground (dev runner via tsx):
 
 ```bash
 npm run dev
 ```
 
-Logs are printed to stdout. For long-running usage, prefer systemd below.
-
-## 9) Systemd (optional)
+## 8) Systemd (optional)
 
 Create a service unit (adjust user/project path):
 
 ```bash
 PROJECT_PATH=$(pwd)
-NODE_BIN=$(command -v node)
+NPM_BIN=$(command -v npm)
 
 sudo tee /etc/systemd/system/nanoclaw.service > /dev/null << EOF
 [Unit]
-Description=NanoClaw WhatsApp Claude assistant
+Description=NanoClaw assistant
 After=network.target
 
 [Service]
 Type=simple
 User=$USER
 WorkingDirectory=${PROJECT_PATH}
-Environment=NODE_ENV=production
 EnvironmentFile=${PROJECT_PATH}/.env
-ExecStart=${NODE_BIN} ${PROJECT_PATH}/dist/index.js
+ExecStart=${NPM_BIN} run dev
 Restart=on-failure
 RestartSec=3
 
@@ -263,17 +182,12 @@ RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ProtectHome=read-only
 ReadWritePaths=${PROJECT_PATH}
-
-StandardOutput=append:${PROJECT_PATH}/logs/nanoclaw.log
-StandardError=append:${PROJECT_PATH}/logs/nanoclaw.error.log
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-mkdir -p logs
 sudo systemctl daemon-reload
 sudo systemctl enable --now nanoclaw.service
 ```
@@ -283,18 +197,12 @@ Check status and logs:
 ```bash
 systemctl status nanoclaw.service --no-pager
 journalctl -u nanoclaw.service -f
-# or
- tail -f logs/nanoclaw.log
 ```
 
-If `ProtectHome=read-only` breaks WhatsApp auth storage or Claude session storage, remove it (or set `ProtectHome=true` and add explicit `ReadWritePaths=` entries).
+## 9) Test
 
-## 10) Test
-
-Tell the user:
-> In your registered chat, send: `@Andy hello`
-
-You should see a response in WhatsApp, and logs in `logs/nanoclaw.log`.
+- Discord: send a message in `DISCORD_MAIN_CHANNEL_ID` → expect a response.
+- WhatsApp: in your registered chat, send `@Andy hello` → expect a response.
 
 ---
 
@@ -334,22 +242,14 @@ sudo apt-get install -y sqlite3
 
 ### No response to messages
 
-- Confirm the message starts with the trigger (e.g. `@Andy`)
-- Confirm `data/registered_groups.json` contains the chat JID
+- Discord: confirm `DISCORD_TOKEN` is set and channel is allowed.
+- WhatsApp: confirm the message starts with the trigger (e.g. `@Andy`) and `data/registered_groups.json` contains the chat JID.
 - Check logs:
   ```bash
-  tail -200 logs/nanoclaw.error.log
+  journalctl -u nanoclaw.service -f
   ```
 
-### `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` not being picked up
+### Claude auth not being picked up
 
 - Verify `.env` exists in the project root
 - If using systemd, verify `EnvironmentFile=` path is correct and restart the service
-
-### Permissions issues when running as a service
-
-- Ensure the service `User=` owns the project directory:
-  ```bash
-  sudo chown -R $USER:$USER .
-  ```
-- Ensure `logs/` is writable by the service user
