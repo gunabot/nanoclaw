@@ -107,7 +107,8 @@ function createPreCompactHook(): HookCallback {
       const summary = getSessionSummary(sessionId, transcriptPath);
       const name = summary ? sanitizeFilename(summary) : generateFallbackName();
 
-      const conversationsDir = '/workspace/group/conversations';
+      const groupDir = process.env.NANOCLAW_GROUP_DIR || '/workspace/group';
+      const conversationsDir = path.join(groupDir, 'conversations');
       fs.mkdirSync(conversationsDir, { recursive: true });
 
       const date = new Date().toISOString().split('T')[0];
@@ -237,7 +238,7 @@ async function main(): Promise<void> {
     for await (const message of query({
       prompt,
       options: {
-        cwd: '/workspace/group',
+        cwd: process.env.NANOCLAW_GROUP_DIR || '/workspace/group',
         resume: input.sessionId,
         allowedTools: [
           'Bash',

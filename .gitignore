@@ -21,3 +21,6 @@ logs/
 .vscode/
 
 agents-sdk-docs
+
+# Local issue tracker
+.beads/
