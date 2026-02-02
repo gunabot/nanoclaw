@@ -573,7 +573,7 @@ async function connectWhatsApp(): Promise<void> {
       logger.error(msg);
       // Best-effort desktop notification (Linux). Non-fatal if notify-send is missing.
       exec(`command -v notify-send >/dev/null 2>&1 && notify-send "NanoClaw" "${msg}" || true`);
-      setTimeout(() => process.exit(1), 1000);
+      // Disabled: setTimeout(() => process.exit(1), 1000); // Allow Discord to continue
     }
 
     if (connection === 'close') {
@@ -596,12 +596,6 @@ async function connectWhatsApp(): Promise<void> {
       setInterval(() => {
         syncGroupMetadata().catch(err => logger.error({ err }, 'Periodic group sync failed'));
       }, GROUP_SYNC_INTERVAL_MS);
-      startSchedulerLoop({
-        sendMessage,
-        registeredGroups: () => registeredGroups,
-        getSessions: () => sessions
-      });
-      startIpcWatcher();
       startMessageLoop();
     }
   });
@@ -660,16 +654,36 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
+  // Start IPC watcher and scheduler (needed for both WhatsApp and Discord)
+  startSchedulerLoop({
+    sendMessage,
+    registeredGroups: () => registeredGroups,
+    getSessions: () => sessions
+  });
+  startIpcWatcher();
+
   if (DISCORD_TOKEN) {
-    startDiscord({
+    await startDiscord({
       onIncomingMessage: processDiscordIncoming,
       logger
-    }).catch(err => logger.error({ err }, 'Failed to start Discord client'));
+    });
   } else {
     logger.info('Discord disabled (DISCORD_TOKEN not set)');
   }
 
-  await connectWhatsApp();
+  // WhatsApp is optional - only connect if auth exists
+  const authDir = path.join(STORE_DIR, 'auth');
+  const authFiles = fs.existsSync(authDir) ? fs.readdirSync(authDir) : [];
+  if (authFiles.length > 0) {
+    await connectWhatsApp();
+  } else {
+    logger.info('WhatsApp disabled (no auth credentials)');
+    // Keep process alive for Discord
+    if (!DISCORD_TOKEN) {
+      logger.error('No channels configured - exiting');
+      process.exit(1);
+    }
+  }
 }
 
 main().catch(err => {

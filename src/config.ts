@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import os from 'os';
 import path from 'path';
 
@@ -20,6 +21,10 @@ export const CONTAINER_IMAGE = process.env.CONTAINER_IMAGE || 'nanoclaw-agent:la
 export const CONTAINER_TIMEOUT = parseInt(process.env.CONTAINER_TIMEOUT || '300000', 10);
 export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(process.env.CONTAINER_MAX_OUTPUT_SIZE || '10485760', 10); // 10MB default
 export const IPC_POLL_INTERVAL = 1000;
+
+// Agent runtime selection
+export type AgentRuntime = 'claude' | 'codex';
+export const AGENT_RUNTIME: AgentRuntime = (process.env.AGENT_RUNTIME === 'codex') ? 'codex' : 'claude';
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

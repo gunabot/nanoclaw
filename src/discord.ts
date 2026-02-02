@@ -106,11 +106,15 @@ export async function startDiscord(options: {
 
   client.on(Events.MessageCreate, async (message: Message) => {
     try {
+      log?.info({ author: message.author.tag, content: message.content?.slice(0, 50), channelId: message.channel.id }, 'Discord message received');
       if (!client?.user) return;
       if (message.author.id === client.user.id) return;
       if (message.author.bot) return;
       if (!message.content) return;
-      if (!isAllowed(message)) return;
+      if (!isAllowed(message)) {
+        log?.info({ channelId: message.channel.id, guildId: message.guild?.id, mainChannel: DISCORD_MAIN_CHANNEL_ID }, 'Message not allowed');
+        return;
+      }
 
       const { scopeId, isDM, guildId, channelId } = discordScopeFromMessage(message);
       const isMainChannel = !!DISCORD_MAIN_CHANNEL_ID && channelId === DISCORD_MAIN_CHANNEL_ID;

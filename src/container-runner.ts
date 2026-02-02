@@ -16,10 +16,13 @@ import {
   CONTAINER_TIMEOUT,
   CONTAINER_MAX_OUTPUT_SIZE,
   GROUPS_DIR,
-  DATA_DIR
+  DATA_DIR,
+  AGENT_RUNTIME,
+  type AgentRuntime
 } from './config.js';
 import { RegisteredGroup } from './types.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import { runCodexAgent } from './codex-runner.js';
 
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
@@ -130,6 +133,11 @@ function loadAllowedEnvFromDotenv(projectRoot: string): Record<string, string> {
   return out;
 }
 
+function getAgentRuntime(group: RegisteredGroup): AgentRuntime {
+  const groupRuntime = group.containerConfig?.env?.AGENT_RUNTIME as AgentRuntime | undefined;
+  return groupRuntime || AGENT_RUNTIME || 'claude';
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput
@@ -145,6 +153,8 @@ export async function runContainerAgent(
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
 
+  const runtime = getAgentRuntime(group);
+
   // Per-group HOME (for per-group Claude sessions isolation)
   const groupHomeDir = path.join(DATA_DIR, 'sessions', group.folder);
   const groupClaudeDir = path.join(groupHomeDir, '.claude');
@@ -156,6 +166,17 @@ export async function runContainerAgent(
 
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
+
+  // If configured, run Codex CLI directly (no Claude Agent SDK).
+  if (runtime === 'codex') {
+    logger.info({ group: group.name, isMain: input.isMain, cwd: groupDir }, 'Running Codex runtime');
+
+    // Bind environment expected by Codex runner
+    process.env.NANOCLAW_GROUP_DIR = groupDir;
+    process.env.NANOCLAW_IPC_DIR = groupIpcDir;
+
+    return await runCodexAgent(group, input);
+  }
 
   const agentEntrypoint = getAgentRunnerEntrypoint();
   if (!fs.existsSync(agentEntrypoint)) {
@@ -171,19 +192,22 @@ export async function runContainerAgent(
     isMain: input.isMain,
     cwd: groupDir,
     ipcDir: groupIpcDir
-  }, 'Spawning direct agent runner');
+  }, 'Spawning direct agent runner (Claude)');
 
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ...loadAllowedEnvFromDotenv(projectRoot),
     ...group.containerConfig?.env,
 
-    // Force per-group HOME so agent sessions do not collide across groups
+    // Claude runner uses per-group HOME for session isolation.
     HOME: groupHomeDir,
 
-    // Tell agent-runner where the workspace lives in no-container mode
+    // Tell runner where the workspace lives in no-container mode
     NANOCLAW_GROUP_DIR: groupDir,
-    NANOCLAW_IPC_DIR: groupIpcDir
+    NANOCLAW_IPC_DIR: groupIpcDir,
+
+    // Explicit runtime selection
+    AGENT_RUNTIME: 'claude'
   };
 
   return new Promise((resolve) => {

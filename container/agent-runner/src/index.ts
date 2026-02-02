@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { createIpcMcp } from './ipc-mcp.js';
+import { runCodex } from './codex-runner.js';
 
 interface ContainerInput {
   prompt: string;
@@ -233,7 +234,22 @@ async function main(): Promise<void> {
   }
 
   try {
-    log('Starting agent...');
+    const runtime = (process.env.AGENT_RUNTIME || 'claude').toLowerCase();
+
+    if (runtime === 'codex') {
+      log('Starting agent (Codex CLI)...');
+      const out = await runCodex(prompt, { timeoutMs: parseInt(process.env.CONTAINER_TIMEOUT || '300000', 10) });
+      result = out.text;
+      log('Agent completed successfully (Codex)');
+      writeOutput({
+        status: 'success',
+        result,
+        newSessionId: undefined
+      });
+      return;
+    }
+
+    log('Starting agent (Claude Agent SDK)...');
 
     for await (const message of query({
       prompt,
