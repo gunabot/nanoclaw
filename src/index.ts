@@ -32,7 +32,9 @@ import {
   updateChatName,
   getAllChats,
   getLastGroupSync,
-  setLastGroupSync
+  setLastGroupSync,
+  getSetting,
+  setSetting
 } from './db.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { runContainerAgent, writeTasksSnapshot, writeGroupsSnapshot, AvailableGroup } from './container-runner.js';
@@ -196,6 +198,21 @@ async function processMessage(msg: NewMessage): Promise<void> {
 }
 
 async function processDiscordIncoming(msg: DiscordIncomingMessage): Promise<void> {
+  // Handle admin commands (hot-swappable settings)
+  const commandMatch = msg.content.match(/^!runtime\s+(claude|codex|status)$/i);
+  if (commandMatch) {
+    const cmd = commandMatch[1].toLowerCase();
+    if (cmd === 'status') {
+      const current = getSetting('agent_runtime') || 'claude (default)';
+      await sendMessage(msg.scopeId, `🔧 Current runtime: **${current}**`);
+    } else {
+      setSetting('agent_runtime', cmd);
+      logger.info({ runtime: cmd, user: msg.authorName }, 'Runtime switched via command');
+      await sendMessage(msg.scopeId, `✅ Runtime switched to **${cmd}**. Next message will use ${cmd === 'codex' ? 'Codex CLI' : 'Claude Agent SDK'}.`);
+    }
+    return; // Don't process as normal message
+  }
+
   // Persist chat + message
   storeChatMetadata(msg.scopeId, msg.timestamp, msg.channelName ? `discord:${msg.channelName}` : msg.scopeId);
   storeDiscordMessage({
@@ -208,7 +225,9 @@ async function processDiscordIncoming(msg: DiscordIncomingMessage): Promise<void
     isFromMe: false
   });
 
-  const shouldRespond = msg.isDM || msg.isMainChannel || msg.isMentioned;
+  // Respond to all messages in allowed channels (no @mention required)
+  // The isAllowed check in discord.ts already filters to main channel + allowlisted channels
+  const shouldRespond = true;
   if (!shouldRespond) return;
 
   const sinceTimestamp = lastAgentTimestamp[msg.scopeId] || '';

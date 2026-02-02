@@ -23,6 +23,7 @@ import {
 import { RegisteredGroup } from './types.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { runCodexAgent } from './codex-runner.js';
+import { getSetting } from './db.js';
 
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
@@ -134,8 +135,15 @@ function loadAllowedEnvFromDotenv(projectRoot: string): Record<string, string> {
 }
 
 function getAgentRuntime(group: RegisteredGroup): AgentRuntime {
+  // Priority: per-group config > database setting > env var > default
   const groupRuntime = group.containerConfig?.env?.AGENT_RUNTIME as AgentRuntime | undefined;
-  return groupRuntime || AGENT_RUNTIME || 'claude';
+  if (groupRuntime) return groupRuntime;
+
+  // Hot-swappable: check database setting
+  const dbRuntime = getSetting('agent_runtime') as AgentRuntime | null;
+  if (dbRuntime && (dbRuntime === 'claude' || dbRuntime === 'codex')) return dbRuntime;
+
+  return AGENT_RUNTIME || 'claude';
 }
 
 export async function runContainerAgent(

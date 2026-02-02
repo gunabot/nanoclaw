@@ -58,6 +58,12 @@ export function initDatabase(): void {
       FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)
     );
     CREATE INDEX IF NOT EXISTS idx_task_run_logs ON task_run_logs(task_id, run_at);
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // Add sender_name column if it doesn't exist (migration for existing DBs)
@@ -306,4 +312,23 @@ export function getTaskRunLogs(taskId: string, limit = 10): TaskRunLog[] {
     ORDER BY run_at DESC
     LIMIT ?
   `).all(taskId, limit) as TaskRunLog[];
+}
+
+// Settings (hot-swappable config)
+export function getSetting(key: string): string | null {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setSetting(key: string, value: string): void {
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).run(key, value, now);
+}
+
+export function getAllSettings(): Record<string, string> {
+  const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
+  return Object.fromEntries(rows.map(r => [r.key, r.value]));
 }
