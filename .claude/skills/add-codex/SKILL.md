@@ -73,7 +73,22 @@ This updates the `settings` table (`agent_runtime`) and survives restarts.
    - NanoClaw replies with Codex output
    - No `codex: command not found` errors in logs
 
-## 5) Troubleshooting
+## 5) Codex trust configuration
+
+NanoClaw runs Codex from `groups/<folder>/` directories. Codex CLI only executes in
+trusted paths configured in `~/.codex/config.toml`. Add the NanoClaw groups paths:
+
+```toml
+[projects."/path/to/nanoclaw/groups"]
+trust_level = "trusted"
+
+[projects."/path/to/nanoclaw/groups/discord"]
+trust_level = "trusted"
+```
+
+Use the exact absolute paths for your install.
+
+## 6) Troubleshooting
 
 - **`codex: command not found`**
   - Install Codex CLI and ensure it is on PATH for the NanoClaw process.
@@ -81,6 +96,10 @@ This updates the `settings` table (`agent_runtime`) and survives restarts.
 - **OAuth / login errors**
   - Ensure NanoClaw runs under the same user account that completed `codex` login.
   - Avoid overriding `HOME` for Codex.
+
+- **Codex returns empty output**
+  - Check that `groups/<folder>/` directories are configured as trusted in
+    `~/.codex/config.toml`.
 
 - **Empty response / non-zero exit**
   - Check `groups/<folder>/logs/agent-*.log`
