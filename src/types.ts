@@ -77,3 +77,8 @@ export interface TaskRunLog {
   result: string | null;
   error: string | null;
 }
+
+// Discord scope IDs used as chat_jid values
+export type DiscordGuildScopeId = `discord:${string}:${string}`;
+export type DiscordDMScopeId = `discord:dm:${string}`;
+export type DiscordScopeId = DiscordGuildScopeId | DiscordDMScopeId;

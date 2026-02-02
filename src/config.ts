@@ -30,3 +30,17 @@ export const TRIGGER_PATTERN = new RegExp(`^@${escapeRegex(ASSISTANT_NAME)}\\b`,
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default
 export const TIMEZONE = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+function parseCsvEnv(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+// Discord (optional)
+export const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+export const DISCORD_MAIN_CHANNEL_ID = process.env.DISCORD_MAIN_CHANNEL_ID;
+export const DISCORD_ALLOWED_GUILD_IDS = parseCsvEnv(process.env.DISCORD_ALLOWED_GUILD_IDS);
+export const DISCORD_ALLOWED_CHANNEL_IDS = parseCsvEnv(process.env.DISCORD_ALLOWED_CHANNEL_IDS);

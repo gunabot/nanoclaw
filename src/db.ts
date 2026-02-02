@@ -159,8 +159,33 @@ export function storeMessage(msg: proto.IWebMessageInfo, chatJid: string, isFrom
   const senderName = pushName || sender.split('@')[0];
   const msgId = msg.key.id || '';
 
-  db.prepare(`INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+  db.prepare(`INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?, ?)`) 
     .run(msgId, chatJid, sender, senderName, content, timestamp, isFromMe ? 1 : 0);
+}
+
+/**
+ * Store a Discord message with full content.
+ * chatJid should be a Discord scope id (e.g. discord:<guildId>:<channelId> or discord:dm:<userId>).
+ */
+export function storeDiscordMessage(params: {
+  id: string;
+  chatJid: string;
+  senderId: string;
+  senderName: string;
+  content: string;
+  timestamp: string;
+  isFromMe: boolean;
+}): void {
+  db.prepare(`INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?, ?)`) 
+    .run(
+      params.id,
+      params.chatJid,
+      params.senderId,
+      params.senderName,
+      params.content,
+      params.timestamp,
+      params.isFromMe ? 1 : 0
+    );
 }
 
 export function getNewMessages(jids: string[], lastTimestamp: string, botPrefix: string): { messages: NewMessage[]; newTimestamp: string } {

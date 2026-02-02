@@ -17,13 +17,27 @@ import {
   TRIGGER_PATTERN,
   MAIN_GROUP_FOLDER,
   IPC_POLL_INTERVAL,
-  TIMEZONE
+  TIMEZONE,
+  DISCORD_TOKEN
 } from './config.js';
 import { RegisteredGroup, Session, NewMessage } from './types.js';
-import { initDatabase, storeMessage, storeChatMetadata, getNewMessages, getMessagesSince, getAllTasks, getTaskById, updateChatName, getAllChats, getLastGroupSync, setLastGroupSync } from './db.js';
+import {
+  initDatabase,
+  storeMessage,
+  storeChatMetadata,
+  storeDiscordMessage,
+  getNewMessages,
+  getMessagesSince,
+  getAllTasks,
+  updateChatName,
+  getAllChats,
+  getLastGroupSync,
+  setLastGroupSync
+} from './db.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { runContainerAgent, writeTasksSnapshot, writeGroupsSnapshot, AvailableGroup } from './container-runner.js';
 import { loadJson, saveJson } from './utils.js';
+import { startDiscord, sendDiscordMessage, setDiscordTyping, type DiscordIncomingMessage } from './discord.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -38,11 +52,23 @@ let sessions: Session = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 
-async function setTyping(jid: string, isTyping: boolean): Promise<void> {
+const DISCORD_GROUP: RegisteredGroup = {
+  name: 'Discord',
+  folder: 'discord',
+  trigger: '@mention',
+  added_at: new Date().toISOString()
+};
+
+async function setTyping(chatJid: string, isTyping: boolean): Promise<void> {
   try {
-    await sock.sendPresenceUpdate(isTyping ? 'composing' : 'paused', jid);
+    if (chatJid.startsWith('discord:')) {
+      await setDiscordTyping(chatJid, isTyping);
+      return;
+    }
+
+    await sock.sendPresenceUpdate(isTyping ? 'composing' : 'paused', chatJid);
   } catch (err) {
-    logger.debug({ jid, err }, 'Failed to update typing status');
+    logger.debug({ chatJid, err }, 'Failed to update typing status');
   }
 }
 
@@ -128,6 +154,21 @@ function getAvailableGroups(): AvailableGroup[] {
     }));
 }
 
+function buildPromptFromMessages(chatJid: string, sinceTimestamp: string): string {
+  const missedMessages = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
+
+  const lines = missedMessages.map(m => {
+    const escapeXml = (s: string) => s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`;
+  });
+
+  return `<messages>\n${lines.join('\n')}\n</messages>`;
+}
+
 async function processMessage(msg: NewMessage): Promise<void> {
   const group = registeredGroups[msg.chat_jid];
   if (!group) return;
@@ -138,27 +179,14 @@ async function processMessage(msg: NewMessage): Promise<void> {
   // Main group responds to all messages; other groups require trigger prefix
   if (!isMainGroup && !TRIGGER_PATTERN.test(content)) return;
 
-  // Get all messages since last agent interaction so the session has full context
   const sinceTimestamp = lastAgentTimestamp[msg.chat_jid] || '';
-  const missedMessages = getMessagesSince(msg.chat_jid, sinceTimestamp, ASSISTANT_NAME);
-
-  const lines = missedMessages.map(m => {
-    // Escape XML special characters in content
-    const escapeXml = (s: string) => s
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`;
-  });
-  const prompt = `<messages>\n${lines.join('\n')}\n</messages>`;
-
+  const prompt = buildPromptFromMessages(msg.chat_jid, sinceTimestamp);
   if (!prompt) return;
 
-  logger.info({ group: group.name, messageCount: missedMessages.length }, 'Processing message');
+  logger.info({ group: group.name, messageCount: getMessagesSince(msg.chat_jid, sinceTimestamp, ASSISTANT_NAME).length }, 'Processing message');
 
   await setTyping(msg.chat_jid, true);
-  const response = await runAgent(group, prompt, msg.chat_jid);
+  const response = await runAgent(group, prompt, msg.chat_jid, isMainGroup);
   await setTyping(msg.chat_jid, false);
 
   if (response) {
@@ -167,8 +195,41 @@ async function processMessage(msg: NewMessage): Promise<void> {
   }
 }
 
-async function runAgent(group: RegisteredGroup, prompt: string, chatJid: string): Promise<string | null> {
-  const isMain = group.folder === MAIN_GROUP_FOLDER;
+async function processDiscordIncoming(msg: DiscordIncomingMessage): Promise<void> {
+  // Persist chat + message
+  storeChatMetadata(msg.scopeId, msg.timestamp, msg.channelName ? `discord:${msg.channelName}` : msg.scopeId);
+  storeDiscordMessage({
+    id: msg.id,
+    chatJid: msg.scopeId,
+    senderId: msg.authorId,
+    senderName: msg.authorName,
+    content: msg.content,
+    timestamp: msg.timestamp,
+    isFromMe: false
+  });
+
+  const shouldRespond = msg.isDM || msg.isMainChannel || msg.isMentioned;
+  if (!shouldRespond) return;
+
+  const sinceTimestamp = lastAgentTimestamp[msg.scopeId] || '';
+  const prompt = buildPromptFromMessages(msg.scopeId, sinceTimestamp);
+  if (!prompt) return;
+
+  const isMain = msg.isMainChannel;
+
+  logger.info({ scopeId: msg.scopeId, isMain, isDM: msg.isDM }, 'Processing Discord message');
+
+  await setTyping(msg.scopeId, true);
+  const response = await runAgent(DISCORD_GROUP, prompt, msg.scopeId, isMain);
+  await setTyping(msg.scopeId, false);
+
+  if (response) {
+    lastAgentTimestamp[msg.scopeId] = msg.timestamp;
+    await sendMessage(msg.scopeId, `${ASSISTANT_NAME}: ${response}`);
+  }
+}
+
+async function runAgent(group: RegisteredGroup, prompt: string, chatJid: string, isMain: boolean): Promise<string | null> {
   const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
@@ -213,13 +274,34 @@ async function runAgent(group: RegisteredGroup, prompt: string, chatJid: string)
   }
 }
 
-async function sendMessage(jid: string, text: string): Promise<void> {
+async function sendMessage(chatJid: string, text: string): Promise<void> {
   try {
-    await sock.sendMessage(jid, { text });
-    logger.info({ jid, length: text.length }, 'Message sent');
+    if (chatJid.startsWith('discord:')) {
+      await sendDiscordMessage(chatJid, text);
+      logger.info({ chatJid, length: text.length }, 'Discord message sent');
+      return;
+    }
+
+    await sock.sendMessage(chatJid, { text });
+    logger.info({ chatJid, length: text.length }, 'WhatsApp message sent');
   } catch (err) {
-    logger.error({ jid, err }, 'Failed to send message');
+    logger.error({ chatJid, err }, 'Failed to send message');
   }
+}
+
+function resolveChatJidForFolder(groupFolder: string): string | null {
+  // WhatsApp groups (registered)
+  const wa = Object.entries(registeredGroups).find(([, g]) => g.folder === groupFolder)?.[0];
+  if (wa) return wa;
+
+  // Discord group folder defaults to the configured main channel (best effort)
+  // This is only used for scheduled tasks created via IPC.
+  if (groupFolder === DISCORD_GROUP.folder) {
+    // no stable mapping unless a message has been seen; return null
+    return null;
+  }
+
+  return null;
 }
 
 function startIpcWatcher(): void {
@@ -256,7 +338,7 @@ function startIpcWatcher(): void {
               if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
-                if (isMain || (targetGroup && targetGroup.folder === sourceGroup)) {
+                if (isMain || (targetGroup && targetGroup.folder === sourceGroup) || data.chatJid.startsWith('discord:')) {
                   await sendMessage(data.chatJid, `${ASSISTANT_NAME}: ${data.text}`);
                   logger.info({ chatJid: data.chatJid, sourceGroup }, 'IPC message sent');
                 } else {
@@ -342,12 +424,10 @@ async function processTaskIpc(
         }
 
         // Resolve the correct JID for the target group (don't trust IPC payload)
-        const targetJid = Object.entries(registeredGroups).find(
-          ([, group]) => group.folder === targetGroup
-        )?.[0];
+        const targetJid = resolveChatJidForFolder(targetGroup);
 
         if (!targetJid) {
-          logger.warn({ targetGroup }, 'Cannot schedule task: target group not registered');
+          logger.warn({ targetGroup }, 'Cannot schedule task: target group not registered/resolveable');
           break;
         }
 
@@ -579,6 +659,16 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+
+  if (DISCORD_TOKEN) {
+    startDiscord({
+      onIncomingMessage: processDiscordIncoming,
+      logger
+    }).catch(err => logger.error({ err }, 'Failed to start Discord client'));
+  } else {
+    logger.info('Discord disabled (DISCORD_TOKEN not set)');
+  }
+
   await connectWhatsApp();
 }
 
